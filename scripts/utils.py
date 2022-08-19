@@ -7,10 +7,12 @@ from pathlib import Path
 import markov_clustering as mc
 import networkx as nx
 import itertools
+import numpy as np
 from sklearn.cluster import KMeans
 import matplotlib.pyplot as plt
 from subprocess import run
 import pyvips
+import yaml
 from PIL import Image, ImageOps, ImageFont, ImageDraw
 
 from Bio import SeqIO
@@ -20,31 +22,125 @@ from Bio.SeqRecord import SeqRecord
 from Bio import Phylo
 
 
-def preprocessing(input_dir, phagedb_dir):
+def preprocessing(inphared_dir, prophages_dir, phrogs_annot_table, phagedb_dir):
     """ ... """
 
-    # create output directory
-    Path(phagedb_dir).mkdir(exist_ok=True, parents=True)
-
-    print('Beware of hardcoded paths and file names! ', sep='')
-
     # input paths
-    prophages_dir = Path(input_dir, 'PROPHAGES-DB-1Aug2022')
-    prophages_fasta =  Path(prophages_dir, 'klebsiella_inphared.fasta')
-    prophages_metadata = Path(prophages_dir, 'klebsiella_inphared.tsv')
-    prophages_orfs =  Path(prophages_dir, 'orfs.fasta')
-
-    inphared_dir = Path(input_dir, 'INPHARED-DB-1Aug2022-KLEBSIELLA')
-    inphared_fasta =  Path(inphared_dir, 'prophages.fasta')
-    inphared_metadata = Path(inphared_dir, 'prophages.tsv')
-    inphared_orfs =  Path(inphared_dir, 'orfs.fasta')
-
-    records = [SeqIO.parse(path) for path in [prophages_fasta, inphared_fasta]]
-    records.write('phages.fasta')
-    # save
-    SeqIO.parse()
+    prophages_fasta =  Path(prophages_dir, 'prophages.fasta')
+    prophages_metadata = Path(prophages_dir, 'prophages.tsv')
+    prophages_annot = Path(prophages_dir, 'functional-annotation/output/5_proteins.tsv')
+    prophages_orfs_dir =  Path(prophages_dir, 'functional-annotation/1_orf_prediction/3_orfs')
+    prophages_annot_input = Path(prophages_dir, 'functional-annotation/output/1_input.txt')
 
 
+    inphared_fasta =  Path(inphared_dir, 'klebsiella_inphared.fasta')
+    inphared_metadata = Path(inphared_dir, 'klebsiella_inphared.tsv')
+    inphared_annot = Path(inphared_dir, 'functional-annotation/output/5_proteins.tsv')
+    inphared_orfs_dir =  Path(inphared_dir, 'functional-annotation/1_orf_prediction/3_orfs')
+    inphared_annot_input = Path(inphared_dir, 'functional-annotation/output/1_input.txt')
+
+    # output paths
+    phages_fasta =  Path(phagedb_dir, 'phages.fasta')
+    phages_genank =  Path(phagedb_dir, 'phages.gb')
+    phages_metadata = Path(phagedb_dir, 'phages.tsv')
+    phages_annot_input = Path(phagedb_dir, 'annot_input.txt')
+    phages_annot = Path(phagedb_dir, 'annot.tsv')
+
+    split_records_dir = Path(phagedb_dir, 'split_records')
+    phages_orfs_dir = Path(split_records_dir, 'orfs')
+    phages_genbank_dir = Path(split_records_dir, 'genbank')
+    phages_fasta_dir = Path(split_records_dir, 'fasta')
+
+    if split_records_dir.exists(): shutil.rmtree(split_records_dir) # remove if exist directory
+    Path(phages_orfs_dir).mkdir(exist_ok=True, parents=True) # create empty directory
+    Path(phages_genbank_dir).mkdir(exist_ok=True, parents=True) # create empty directory
+    Path(phages_fasta_dir).mkdir(exist_ok=True, parents=True) # create empty directory
+
+    # copy to one files all phages
+    records = [SeqIO.parse(path, 'fasta') for path in [prophages_fasta, inphared_fasta]]
+    records = list(itertools.chain(*records))
+    n = SeqIO.write(records, phages_fasta, 'fasta')
+
+    for r in records:
+        path = Path(phages_fasta_dir, r.name + '.fasta')
+        SeqIO.write(r, path, 'fasta')
+
+    if n == len(records): print('Records saved successfully :) ')
+    else: print('Some records are missing.')
+
+    # copy orf files
+    orf_files = [list(dir.glob('*fasta')) for dir in [prophages_orfs_dir, inphared_orfs_dir]]
+    orf_files = list(itertools.chain(*orf_files))
+
+    for path in orf_files:
+        shutil.copy(path, phages_orfs_dir)
+    print('ORFs copied successfully :)')
+
+    # get one annotation table
+    prophages_annot_df = pd.read_csv(prophages_annot, sep='\t')
+    inphared_annot_df = pd.read_csv(inphared_annot, sep='\t')
+    annot_df = pd.concat([prophages_annot_df, inphared_annot_df])
+    annot_df.to_csv(phages_annot, sep='\t', index=False)
+
+    # from annotation table to genbank files
+    table2genbank(phages_annot, phages_fasta, phages_genank, phrogs_annot_table, colour_type='structural')
+
+    # load genbank file and save each record to seperate file for easyfig
+    records = SeqIO.parse(phages_genank, 'genbank')
+    for r in records:
+        path = Path(phages_genbank_dir, r.name + '.gb')
+        SeqIO.write(r, path, 'genbank')
+
+    # combining metadata tables
+    inphared_df = pd.read_csv(inphared_metadata, sep='\t')
+    prophages_df = pd.read_csv(prophages_metadata, sep='\t')
+
+    prophages_df['prophage'] = True
+    inphared_df['prophage'] = False
+
+    inphared_df['Genome Length (bp)'] = np.round(inphared_df['Genome Length (bp)'] / 1000, 2)
+
+    prophages_df.rename({'phage_length': 'Genome Length (kb)'}, axis=1, inplace=True)
+    inphared_df.rename({'Accession': 'phageID'}, axis=1, inplace=True)
+    metadata_df = pd.concat([prophages_df, inphared_df])
+    metadata_df.drop('n', axis=1, inplace=True)
+
+    metadata_df.reset_index(drop=True)
+    metadata_df.index = metadata_df.index + 1
+    metadata_df['n'] = metadata_df.index
+
+    cols = ['n']+ list(metadata_df.columns[:-1])
+    metadata_df[cols].to_csv(phages_metadata, sep='\t', index=False)
+    print('Metadata unified and copied successfully :) ')
+
+    annot_input_dfs = [pd.read_csv(path, sep='\t') for path in [prophages_annot_input, inphared_annot_input]]
+    annot_input_df = pd.concat(annot_input_dfs)
+    annot_input_df.to_csv(phages_annot_input, sep='\t', index=False)
+    print('Functiona annotation input tables merged and saved :)')
+
+
+def run_ANImm(animm_dir, phagedb_dir, output_dir):
+    """ ... """
+
+    if Path(output_dir).exists():
+        print(f'ANImm already done! To rerun delete folder: {output_dir}')
+        return
+    else: pass
+
+    config_path = Path(animm_dir, 'cds-based.yml')
+    with open(config_path, 'r') as f:
+        config = yaml.safe_load(f)
+
+    config['input_dir'] = str(Path(phagedb_dir, 'split_records', 'orfs'))
+    config['output_dir'] = str(output_dir)
+
+    with open(config_path, 'w') as file:
+        yaml.dump(config, file)
+
+    cmd = f'cd {animm_dir}; snakemake --use-conda --cores all --configfile cds-based.yml'
+    process = run(cmd, capture_output=True, shell=True)
+
+    return process
 
 
 def get_phariants(wgrr_file, input_table, output_file, wgrr_threshold):
@@ -65,10 +161,29 @@ def get_phariants(wgrr_file, input_table, output_file, wgrr_threshold):
     return clusters_df
 
 
-def tree2clades(mash_tree_path, phage_tree_clusters, clades, n_clusters=1, kmeans_show=True):
+def run_mashtree(phagedb_dir, output_dir):
+    """ .... """
+
+    fasta_dir = Path(phagedb_dir, 'split_records/fasta')
+    output_file = str(Path(output_dir, 'tree.newick'))
+
+    Path(output_dir).mkdir(exist_ok=True, parents=True)
+
+    cmd = f'source ~/.bashrc; conda activate mashtree; mashtree.pl {fasta_dir}/* >> {output_file}; conda activate mybase;'
+
+    print('Just run the command in bash. Problem with conda env AGAIN : / \n')
+    print(cmd)
+
+    # process = run(cmd, capture_output=True, shell=True)
+    # if not str(process.stderr): print('Mashtree done! :)')
+
+    return cmd
+
+
+def tree2clades(mash_tree_path, phariants_table, clades, n_clusters=1, kmeans_show=True):
     """ ... """
 
-    clusters_df = pd.read_csv(phage_tree_clusters, sep='\t')
+    clusters_df = pd.read_csv(phariants_table, sep='\t')
     representatives = clusters_df.loc[clusters_df['status'] == 'repr', 'contigID'].to_list()
 
     tree = list(Phylo.parse(mash_tree_path, "newick"))[0]
@@ -106,7 +221,7 @@ def table2genbank(annot_table, phages_fasta, genbank, phrogs_annot_table, colour
     Decide which colour to put in genbank: 'structural' or 'phrogs'."""
 
     if genbank.exists():
-        print(f'Nothing to do :)\nTo force rerun delete {genbank}')
+        print(f'Nothing to do in table2genbank :)\nTo force rerun delete {genbank}')
         return None
     else: pass
 
@@ -176,7 +291,7 @@ def table2genbank(annot_table, phages_fasta, genbank, phrogs_annot_table, colour
     # Write the phage with appended protein to the genbank file.
     n = SeqIO.write(records, genbank, 'genbank')
 
-    print(f'Done! {n} phages converted to genbank file.', end='')
+    print(f'Done! {n} phages converted to genbank file.')
 
     return annot_df
 
