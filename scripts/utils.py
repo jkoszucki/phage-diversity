@@ -19,6 +19,34 @@ from Bio.Seq import Seq
 from Bio.SeqRecord import SeqRecord
 from Bio import Phylo
 
+
+def preprocessing(input_dir, phagedb_dir):
+    """ ... """
+
+    # create output directory
+    Path(phagedb_dir).mkdir(exist_ok=True, parents=True)
+
+    print('Beware of hardcoded paths and file names! ', sep='')
+
+    # input paths
+    prophages_dir = Path(input_dir, 'PROPHAGES-DB-1Aug2022')
+    prophages_fasta =  Path(prophages_dir, 'klebsiella_inphared.fasta')
+    prophages_metadata = Path(prophages_dir, 'klebsiella_inphared.tsv')
+    prophages_orfs =  Path(prophages_dir, 'orfs.fasta')
+
+    inphared_dir = Path(input_dir, 'INPHARED-DB-1Aug2022-KLEBSIELLA')
+    inphared_fasta =  Path(inphared_dir, 'prophages.fasta')
+    inphared_metadata = Path(inphared_dir, 'prophages.tsv')
+    inphared_orfs =  Path(inphared_dir, 'orfs.fasta')
+
+    records = [SeqIO.parse(path) for path in [prophages_fasta, inphared_fasta]]
+    records.write('phages.fasta')
+    # save
+    SeqIO.parse()
+
+
+
+
 def get_phariants(wgrr_file, input_table, output_file, wgrr_threshold):
     """ ... """
 
