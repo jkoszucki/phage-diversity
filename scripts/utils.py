@@ -207,8 +207,6 @@ def tree2clades(mash_tree_path, phariants_table, clades, n_clusters=1, kmeans_sh
     if kmeans_show:
         plt.figure(figsize=(30,30))
         plt.scatter(df['total_branch_length'], df['n'], c= kmeans.labels_.astype(float), s=100, alpha=0.5)
-
-        plt.scatter(centroids[:, 0], centroids[:, 1], c='red', s=50)
         plt.show()
     else: pass
 
@@ -359,7 +357,7 @@ def merge_annot_table_and_phrogs_metatable(annot_table, phrogs_annot_table):
     return annot_df
 
 
-def run_easyfig(work_dir, clades, prophages, phages_genbank_dir, easyfig_script, leg_name='structural', annotate_columns=['K_locus', 'ST', 'phageID', 'genetic_localisation'], font_path='/Users/januszkoszucki/Work/Code/prophage-diversity/scripts/esparac.ttf'):
+def run_easyfig(work_dir, clades, prophages, phages_genbank_dir, easyfig_script, leg_name='structural', annotate_columns=['K_locus', 'ST', 'phageID', 'genetic_localisation', 'ICTV_Species', 'ICTV_Genus'], font_path='/Users/januszkoszucki/Work/Code/prophage-diversity/scripts/esparac.ttf'):
     """ ... """
 
     clades_df = pd.read_csv(clades, sep='\t')
@@ -386,6 +384,7 @@ def run_easyfig(work_dir, clades, prophages, phages_genbank_dir, easyfig_script,
     for nclust in clusters:
         leafs = clades_df.loc[clades_df['clusterID'] == nclust]['contigID'].to_list()
         prophages_df = pd.read_csv(prophages, sep='\t')
+        prophages_df.fillna('', inplace=True)
 
         # convert phage/leaf names to paths to genbank files
         easyfig_input_files = [str(Path(phages_genbank_dir, leaf.upper() + '.gb')) for leaf in leafs]
