@@ -380,8 +380,8 @@ def run_easyfig(work_dir, clades, prophages, phages_genbank_dir, easyfig_script,
     raw_dir.mkdir(exist_ok=True, parents=True)
     annotated_dir.mkdir(exist_ok=True, parents=True)
 
-
-    for nclust in clusters:
+    print('Subset!!!')
+    for nclust in clusters[0:2]:
         leafs = clades_df.loc[clades_df['clusterID'] == nclust]['contigID'].to_list()
         prophages_df = pd.read_csv(prophages, sep='\t')
         prophages_df.fillna('', inplace=True)
@@ -392,24 +392,24 @@ def run_easyfig(work_dir, clades, prophages, phages_genbank_dir, easyfig_script,
 
         svg = Path(raw_dir, f'clade_{str(nclust)}.svg')
 
-        cmd = f'source ~/.bash_profile; conda activate easyfig ; \
+        cmd = f'source ~/.bashrc; conda activate easyfig ; \
                 python2 {easyfig_script} \
                 -svg -legend double -leg_name {leg_name} -f CDS -f1 T -i 60 -filter -aln right \
                 -o {str(svg)} {easyfig_input_files};'
-
-        complete_process = run(cmd, capture_output=True, shell=True)
-
-        # convert svg2jpeg
-        jpeg_raw = Path(raw_dir, svg.stem + '.jpg')
-        image = pyvips.Image.new_from_file(svg, dpi=100).flatten(background=255)
-        image.write_to_file(jpeg_raw)
-
-        jpeg_annot = Path(annotated_dir, svg.stem + '.jpg')
-
-        lines_to_annotate = get_text(prophages_df, leafs, annotate_columns)
-
-        color = (0,0,0)
-        add_annotation(jpeg_raw, jpeg_annot, font, color, lines_to_annotate)
+        print(cmd)
+        # complete_process = run(cmd, capture_output=True, shell=True)
+        #
+        # # convert svg2jpeg
+        # jpeg_raw = Path(raw_dir, svg.stem + '.jpg')
+        # image = pyvips.Image.new_from_file(svg, dpi=100).flatten(background=255)
+        # image.write_to_file(jpeg_raw)
+        #
+        # jpeg_annot = Path(annotated_dir, svg.stem + '.jpg')
+        #
+        # lines_to_annotate = get_text(prophages_df, leafs, annotate_columns)
+        #
+        # color = (0,0,0)
+        # add_annotation(jpeg_raw, jpeg_annot, font, color, lines_to_annotate)
 
     print('Done! :)', sep='')
     return annotated_dir, complete_process
