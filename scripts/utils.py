@@ -357,7 +357,7 @@ def merge_annot_table_and_phrogs_metatable(annot_table, phrogs_annot_table):
     return annot_df
 
 
-def run_easyfig(work_dir, clades, prophages, phages_genbank_dir, easyfig_script, leg_name='structural', annotate_columns=['K_locus', 'ST', 'phageID', 'genetic_localisation', 'ICTV_Species', 'ICTV_Genus'], font_path='other/arial.ttf'):
+def run_easyfig(work_dir, clades, phages, phages_genbank_dir, easyfig_script, leg_name='structural', annotate_columns=['K_locus', 'ST', 'phageID', 'genetic_localisation', 'ICTV_Family'], font_path='other/arial.ttf'):
     """ ... """
 
     clades_df = pd.read_csv(clades, sep='\t')
@@ -375,16 +375,15 @@ def run_easyfig(work_dir, clades, prophages, phages_genbank_dir, easyfig_script,
         print(f'To force rerun delete {str(annotated_dir)}')
         return None, None
     else:
-        print('Generating easyfig figures for {len(clusters)} clusters :) ', sep='')
+        print(f'Generating easyfig figures for {len(clusters)} clusters :) ', sep='')
 
     raw_dir.mkdir(exist_ok=True, parents=True)
     annotated_dir.mkdir(exist_ok=True, parents=True)
 
-    print('Subset!!!')
-    for nclust in clusters[0:2]:
+    for nclust in clusters:
         leafs = clades_df.loc[clades_df['clusterID'] == nclust]['contigID'].to_list()
-        prophages_df = pd.read_csv(prophages, sep='\t')
-        prophages_df.fillna('', inplace=True)
+        phages_df = pd.read_csv(phages, sep='\t')
+        phages_df.fillna('', inplace=True)
 
         # convert phage/leaf names to paths to genbank files
         easyfig_input_files = [str(Path(phages_genbank_dir, leaf.upper() + '.gb')) for leaf in leafs]
@@ -392,24 +391,23 @@ def run_easyfig(work_dir, clades, prophages, phages_genbank_dir, easyfig_script,
 
         svg = Path(raw_dir, f'clade_{str(nclust)}.svg')
 
-        cmd = f'source ~/.bashrc; conda activate easyfig ; \
+        cmd = f'bash -c "source activate root; conda activate easyfig ; \
                 python2 {easyfig_script} \
                 -svg -legend double -leg_name {leg_name} -f CDS -f1 T -i 60 -filter -aln right \
-                -o {str(svg)} {easyfig_input_files};'
-        print(cmd)
-        # complete_process = run(cmd, capture_output=True, shell=True)
-        #
-        # # convert svg2jpeg
-        # jpeg_raw = Path(raw_dir, svg.stem + '.jpg')
-        # image = pyvips.Image.new_from_file(svg, dpi=100).flatten(background=255)
-        # image.write_to_file(jpeg_raw)
-        #
-        # jpeg_annot = Path(annotated_dir, svg.stem + '.jpg')
-        #
-        # lines_to_annotate = get_text(prophages_df, leafs, annotate_columns)
-        #
-        # color = (0,0,0)
-        # add_annotation(jpeg_raw, jpeg_annot, font, color, lines_to_annotate)
+                -o {str(svg)} {easyfig_input_files};"'
+
+        complete_process = run(cmd, capture_output=True, shell=True)
+
+        # convert svg2jpeg
+        jpeg_raw = Path(raw_dir, svg.stem + '.jpg')
+        image = pyvips.Image.new_from_file(svg, dpi=100).flatten(background=255)
+        image.write_to_file(jpeg_raw)
+
+        jpeg_annot = Path(annotated_dir, svg.stem + '.jpg')
+
+        lines_to_annotate = get_text(phages_df, leafs, annotate_columns)
+        color = (0,0,0)
+        add_annotation(jpeg_raw, jpeg_annot, font, color, lines_to_annotate)
 
     print('Done! :)', sep='')
     return annotated_dir, complete_process
@@ -418,7 +416,6 @@ def run_easyfig(work_dir, clades, prophages, phages_genbank_dir, easyfig_script,
 def get_text(df, phageIDs, columns):
     """ ... """
 
-    df['phageID'] = df.apply(lambda row: ''.join([str(row['n']) + '_' + row['phageID']]), axis=1)
     df = df.loc[df['phageID'].isin(phageIDs)].copy()
 
     df['phageID_cat'] = pd.Categorical(df['phageID'], categories=phageIDs, ordered=True)

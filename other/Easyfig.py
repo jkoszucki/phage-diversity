@@ -11066,9 +11066,9 @@ def genBlast(inlist, cutlist):
         num += 1
     for i in range(len(inlist) - 1):
         if isNewBlastDB():
-            subprocess.Popen('/Users/januszkoszucki/opt/anaconda3/envs/easyfig/bin/makeblastdb -dbtype nucl -out temp_easyfig/tempdb -in temp_easyfig/' + str(i + 2) +
+            subprocess.Popen('/home/MCB/jkoszucki/.conda/envs/easyfig/bin/makeblastdb -dbtype nucl -out temp_easyfig/tempdb -in temp_easyfig/' + str(i + 2) +
                              '.easyfig.fa', shell=True, env={"BLASTDB_LMDB_MAP_SIZE":"1000000"}).wait()
-            print 'makeblastdb -dbtype nucl -out temp_easyfig/tempdb -in temp_easyfig/' + str(i + 2) + '.easyfig.fa'
+            print '/Users/januszkoszucki/opt/anaconda3/envs/easyfig/bin/makeblastdb -dbtype nucl -out temp_easyfig/tempdb -in temp_easyfig/' + str(i + 2) + '.easyfig.fa'
         elif isLegBlastDB():
             subprocess.Popen('formatdb -p F -t tempdb -n temp_easyfig/tempdb -i temp_easyfig/'
                              + str(i + 2) + '.easyfig.fa', shell=True).wait()
