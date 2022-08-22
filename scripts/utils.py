@@ -357,7 +357,7 @@ def merge_annot_table_and_phrogs_metatable(annot_table, phrogs_annot_table):
     return annot_df
 
 
-def run_easyfig(work_dir, clades, prophages, phages_genbank_dir, easyfig_script, leg_name='structural', annotate_columns=['K_locus', 'ST', 'phageID', 'genetic_localisation', 'ICTV_Species', 'ICTV_Genus'], font_path='/Users/januszkoszucki/Work/Code/prophage-diversity/scripts/esparac.ttf'):
+def run_easyfig(work_dir, clades, prophages, phages_genbank_dir, easyfig_script, leg_name='structural', annotate_columns=['K_locus', 'ST', 'phageID', 'genetic_localisation', 'ICTV_Species', 'ICTV_Genus'], font_path='other/arial.ttf'):
     """ ... """
 
     clades_df = pd.read_csv(clades, sep='\t')
@@ -365,8 +365,8 @@ def run_easyfig(work_dir, clades, prophages, phages_genbank_dir, easyfig_script,
     easyfig_dir = Path(work_dir, 'easyfig')
     raw_dir = Path(easyfig_dir, 'raw')
     annotated_dir = Path(easyfig_dir, 'annotated')
-
-    font = ImageFont.truetype(font_path, 70)
+    print(str(Path(font_path).resolve()))
+    font = ImageFont.truetype(str(Path(font_path).resolve()), 70)
     clusters = sorted(list(clades_df['clusterID'].unique()))
 
     # checkpoint
