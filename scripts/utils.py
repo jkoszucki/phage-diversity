@@ -3,6 +3,8 @@ import warnings
 import sys
 import shutil
 import pandas as pd
+import seaborn as sns
+import matplotlib.pyplot as plt
 from pathlib import Path
 import markov_clustering as mc
 import networkx as nx
@@ -50,6 +52,7 @@ def preprocessing(inphared_dir, prophages_dir, phrogs_annot_table, phagedb_dir):
     phages_metadata = Path(phagedb_dir, 'phages.tsv')
     phages_annot_input = Path(phagedb_dir, 'annot_input.txt')
     phages_annot = Path(phagedb_dir, 'annot.tsv')
+    phages_annot_phrogs = Path(phagedb_dir, 'annot_phrogs.tsv')
 
     split_records_dir = Path(phagedb_dir, 'split_records')
     phages_proteins_dir = Path(split_records_dir, 'proteins')
@@ -88,7 +91,8 @@ def preprocessing(inphared_dir, prophages_dir, phrogs_annot_table, phagedb_dir):
     annot_df.to_csv(phages_annot, sep='\t', index=False)
 
     # from annotation table to genbank files
-    table2genbank(phages_annot, phages_fasta, phages_genank, phrogs_annot_table, colour_type='structural')
+    annot_phrogs_df = table2genbank(phages_annot, phages_fasta, phages_genank, phrogs_annot_table, colour_type='structural')
+    annot_phrogs_df.to_csv(phages_annot_phrogs, sep='\t', index=False)
 
     # load genbank file and save each record to seperate file for easyfig
     records = SeqIO.parse(phages_genank, 'genbank')
@@ -110,18 +114,52 @@ def preprocessing(inphared_dir, prophages_dir, phrogs_annot_table, phagedb_dir):
     metadata_df = pd.concat([prophages_df, inphared_df])
     metadata_df.drop('n', axis=1, inplace=True)
 
+    # make table nice
     metadata_df.reset_index(drop=True)
     metadata_df.index = metadata_df.index + 1
     metadata_df['n'] = metadata_df.index
-
     cols = ['n']+ list(metadata_df.columns[:-1])
-    metadata_df[cols].to_csv(phages_metadata, sep='\t', index=False)
-    print('Metadata unified and copied successfully :) ')
 
     annot_input_dfs = [pd.read_csv(path, sep='\t') for path in [prophages_annot_input, inphared_annot_input]]
     annot_input_df = pd.concat(annot_input_dfs)
     annot_input_df.to_csv(phages_annot_input, sep='\t', index=False)
     print('Functiona annotation input tables merged and saved :)')
+
+    # add columns if phage should be flipped
+    metadata_df = flip_phage(annot_phrogs_df, annot_input_df, metadata_df)
+    metadata_df[cols].to_csv(phages_metadata, sep='\t', index=False)
+    print('Metadata unified and copied successfully :) ')
+
+
+def flip_phage(annot_phrogs_df, annot_input_df, metadata_df):
+    """ add column to metadata df if phage should be flipped or not """
+
+    # pahge flip table (based on structural proteins)
+    phages = annot_phrogs_df['contigID'].unique()
+    categs = ['head and packaging', 'connector', 'tail']
+
+    medians = []
+    for phage in phages:
+        filt_phage = (annot_phrogs_df['contigID'] == phage)
+        filt_categs = (annot_phrogs_df['category']).isin(categs)
+        tmp_df = annot_phrogs_df.loc[filt_phage * filt_categs].copy()
+
+        if not len(tmp_df):
+            median = 10**6 # never flip phages that dont have structural genes
+        else:
+            median = np.absolute((tmp_df['stop'] - tmp_df['start']/2)).median()
+        medians.append(median)
+
+    filp_df = pd.DataFrame({'phageID': phages, 'struct_genes_median': medians})
+
+    annot_input_df.rename({'contigID': 'phageID'}, axis=1, inplace=True)
+    filp_df = filp_df.merge(annot_input_df, on='phageID', how='left')
+
+    filp_df['flip_phage'] = (filp_df['contig_len [bp]'] / 2) > (filp_df['struct_genes_median'])
+    flip_df = filp_df[['phageID', 'flip_phage']]
+
+    metadata_df = metadata_df.merge(flip_df, on='phageID', how='left')
+    return metadata_df
 
 
 def coGRR(animm_dir, phagedb_dir, output_dir):
@@ -381,7 +419,7 @@ def between_phariants_easyfig(work_dir, clades, phages, phages_genbank_dir, easy
 
     clades_df = pd.read_csv(clades, sep='\t')
 
-    easyfig_dir = Path(work_dir, 'easyfig')
+    easyfig_dir = Path(work_dir, '1_cophariants_easyfig', '1_between_phariants')
     raw_dir = Path(easyfig_dir, 'raw')
     annotated_dir = Path(easyfig_dir, 'annotated')
 
@@ -479,7 +517,7 @@ def stGRR(animm_dir, phagedb_dir, output_dir, structural_categories=['head and p
     """ ... """
 
     if Path(output_dir).exists():
-        print(f'ANImm already done! To rerun delete folder: {output_dir}')
+        print(f'stGRR already done! To rerun delete folder: {output_dir}')
         return
     else: pass
 
@@ -535,3 +573,28 @@ def stGRR(animm_dir, phagedb_dir, output_dir, structural_categories=['head and p
     proteins_dir = Path(phagedb_dir, 'split_records', 'proteins')
     process = run_ANImm(animm_dir, proteins_dir, stGRR_dir)
     return process
+
+
+def wgrr2network(wgrr_input, network_output):
+    """ ... """
+
+    wgrr_df = pd.read_csv(wgrr_input)
+    wgrr_df['interaction'] = 'artificial'
+
+    cols = ['Seq1', 'interaction', 'Seq2']
+    wgrr_df = wgrr_df[cols]
+    wgrr_df.rename({'Seq1': 'phage_1', 'Seq2': 'phage_2'}, axis=1, inplace=True)
+
+    wgrr_df.to_csv(network_output)
+
+    return wgrr_df
+
+
+def network_and_histogram(wgrr):
+    """ ... """
+    network = Path(Path(wgrr).parents(), 'network.sif')
+    wgrr_df = wgrr2network(wgrr, network)
+
+    hist = Path(Path(wgrr).parents(), 'hist.png')
+    sns.histplots(data=wgrr_df, x='wgrr', bins=40)
+    plt.savefig(hist)
