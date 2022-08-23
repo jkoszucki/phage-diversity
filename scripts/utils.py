@@ -25,18 +25,23 @@ from Bio import Phylo
 def preprocessing(inphared_dir, prophages_dir, phrogs_annot_table, phagedb_dir):
     """ ... """
 
+    if Path(phagedb_dir).exists():
+        print(f'Preprocessing alread done! To rerun delete folder: {phagedb_dir}')
+        return None
+    else: pass
+
     # input paths
     prophages_fasta =  Path(prophages_dir, 'prophages.fasta')
     prophages_metadata = Path(prophages_dir, 'prophages.tsv')
     prophages_annot = Path(prophages_dir, 'functional-annotation/output/5_proteins.tsv')
-    prophages_orfs_dir =  Path(prophages_dir, 'functional-annotation/1_orf_prediction/3_orfs')
+    prophages_proteins_dir =  Path(prophages_dir, 'functional-annotation/1_orf_prediction/4_proteins')
     prophages_annot_input = Path(prophages_dir, 'functional-annotation/output/1_input.txt')
 
 
     inphared_fasta =  Path(inphared_dir, 'klebsiella_inphared.fasta')
     inphared_metadata = Path(inphared_dir, 'klebsiella_inphared.tsv')
     inphared_annot = Path(inphared_dir, 'functional-annotation/output/5_proteins.tsv')
-    inphared_orfs_dir =  Path(inphared_dir, 'functional-annotation/1_orf_prediction/3_orfs')
+    inphared_proteins_dir =  Path(inphared_dir, 'functional-annotation/1_orf_prediction/4_proteins')
     inphared_annot_input = Path(inphared_dir, 'functional-annotation/output/1_input.txt')
 
     # output paths
@@ -47,12 +52,12 @@ def preprocessing(inphared_dir, prophages_dir, phrogs_annot_table, phagedb_dir):
     phages_annot = Path(phagedb_dir, 'annot.tsv')
 
     split_records_dir = Path(phagedb_dir, 'split_records')
-    phages_orfs_dir = Path(split_records_dir, 'orfs')
+    phages_proteins_dir = Path(split_records_dir, 'proteins')
     phages_genbank_dir = Path(split_records_dir, 'genbank')
     phages_fasta_dir = Path(split_records_dir, 'fasta')
 
     if split_records_dir.exists(): shutil.rmtree(split_records_dir) # remove if exist directory
-    Path(phages_orfs_dir).mkdir(exist_ok=True, parents=True) # create empty directory
+    Path(phages_proteins_dir).mkdir(exist_ok=True, parents=True) # create empty directory
     Path(phages_genbank_dir).mkdir(exist_ok=True, parents=True) # create empty directory
     Path(phages_fasta_dir).mkdir(exist_ok=True, parents=True) # create empty directory
 
@@ -69,12 +74,12 @@ def preprocessing(inphared_dir, prophages_dir, phrogs_annot_table, phagedb_dir):
     else: print('Some records are missing.')
 
     # copy orf files
-    orf_files = [list(dir.glob('*fasta')) for dir in [prophages_orfs_dir, inphared_orfs_dir]]
-    orf_files = list(itertools.chain(*orf_files))
+    proteins_files = [list(dir.glob('*fasta')) for dir in [prophages_proteins_dir, inphared_proteins_dir]]
+    proteins_files = list(itertools.chain(*proteins_files))
 
-    for path in orf_files:
-        shutil.copy(path, phages_orfs_dir)
-    print('ORFs copied successfully :)')
+    for path in proteins_files:
+        shutil.copy(path, phages_proteins_dir)
+    print('Proteins files per phage copied successfully (ANImm input) :)')
 
     # get one annotation table
     prophages_annot_df = pd.read_csv(prophages_annot, sep='\t')
@@ -119,7 +124,16 @@ def preprocessing(inphared_dir, prophages_dir, phrogs_annot_table, phagedb_dir):
     print('Functiona annotation input tables merged and saved :)')
 
 
-def run_ANImm(animm_dir, phagedb_dir, output_dir):
+def coGRR(animm_dir, phagedb_dir, output_dir):
+    """ ... """
+
+    proteins_dir = Path(phagedb_dir, 'split_records', 'proteins')
+    process = run_ANImm(animm_dir, proteins_dir, output_dir)
+
+    return process
+
+
+def run_ANImm(animm_dir, input_dir, output_dir):
     """ ... """
 
     if Path(output_dir).exists():
@@ -127,17 +141,17 @@ def run_ANImm(animm_dir, phagedb_dir, output_dir):
         return
     else: pass
 
-    config_path = Path(animm_dir, 'cds-based.yml')
+    config_path = Path(animm_dir, 'sample-configs', 'proteins-based.yml')
     with open(config_path, 'r') as f:
         config = yaml.safe_load(f)
 
-    config['input_dir'] = str(Path(phagedb_dir, 'split_records', 'orfs'))
+    config['input_dir'] = str(input_dir)
     config['output_dir'] = str(output_dir)
 
-    with open(config_path, 'w') as file:
+    with open(config_path, 'w+') as file:
         yaml.dump(config, file)
 
-    cmd = f'cd {animm_dir}; snakemake --use-conda --cores all --configfile cds-based.yml'
+    cmd = f'cd {animm_dir}; snakemake --use-conda --cores all --configfile sample-configs/proteins-based.yml'
     process = run(cmd, capture_output=True, shell=True)
 
     return process
@@ -182,6 +196,11 @@ def run_mashtree(phagedb_dir, output_dir):
 
 def tree2clades(mash_tree_path, phariants_table, clades, n_clusters=1, kmeans_show=True):
     """ ... """
+
+    if Path(clades).exists():
+        print(f'Mashtree already done! To rerun delete folder: {mash_tree_path}')
+        return None
+    else: pass
 
     clusters_df = pd.read_csv(phariants_table, sep='\t')
     representatives = clusters_df.loc[clusters_df['status'] == 'repr', 'contigID'].to_list()
@@ -357,7 +376,7 @@ def merge_annot_table_and_phrogs_metatable(annot_table, phrogs_annot_table):
     return annot_df
 
 
-def run_easyfig(work_dir, clades, phages, phages_genbank_dir, easyfig_script, leg_name='structural', annotate_columns=['K_locus', 'ST', 'phageID', 'genetic_localisation', 'ICTV_Family'], font_path='other/arial.ttf'):
+def between_phariants_easyfig(work_dir, clades, phages, phages_genbank_dir, easyfig_script, leg_name='structural', annotate_columns=['phageID', 'backphlip', 'K_locus', 'ST', 'genetic_localisation', 'ICTV_Family'], font_path='other/arial.ttf'):
     """ ... """
 
     clades_df = pd.read_csv(clades, sep='\t')
@@ -365,9 +384,11 @@ def run_easyfig(work_dir, clades, phages, phages_genbank_dir, easyfig_script, le
     easyfig_dir = Path(work_dir, 'easyfig')
     raw_dir = Path(easyfig_dir, 'raw')
     annotated_dir = Path(easyfig_dir, 'annotated')
-    print(str(Path(font_path).resolve()))
+
     font = ImageFont.truetype(str(Path(font_path).resolve()), 70)
     clusters = sorted(list(clades_df['clusterID'].unique()))
+
+    print(f"Fonth path for annotation of easyfig schemes: {str(Path(font_path).resolve())}")
 
     # checkpoint
     if annotated_dir.exists():
@@ -452,3 +473,65 @@ def add_annotation(input_image, output_image, font, color, text_lines):
         ylocation = ylocation + 208
 
     img.save(output_image)
+
+
+def stGRR(animm_dir, phagedb_dir, output_dir, structural_categories=['head and packaging', 'connector', 'tail'], phrogs_table='other/upgraded_phrog_annot_v3.tsv'):
+    """ ... """
+
+    if Path(output_dir).exists():
+        print(f'ANImm already done! To rerun delete folder: {output_dir}')
+        return
+    else: pass
+
+    # paths
+    annot_table = Path(phagedb_dir, 'annot.tsv')
+    orfs_dir = Path(output_dir, '1_struct_orfs')
+    stGRR_dir = Path(output_dir, '2_ANImm')
+    struct_table = Path(output_dir, 'struct_annot.tsv')
+
+    Path(orfs_dir).mkdir(exist_ok=True, parents=True)
+    Path(animm_dir).mkdir(exist_ok=True, parents=True)
+
+    # load tables
+    annot_df = pd.read_csv(annot_table, sep='\t')
+    phrogs_df = pd.read_csv(phrogs_table, sep='\t')
+
+    annot_df['phrog'] = annot_df.apply(lambda row: int(row['target'].strip('phrog_')) , axis=1)
+    annot_df = annot_df.merge(phrogs_df, on='phrog', how='left')
+
+
+    filt_structural = annot_df['category'].isin(structural_categories)
+    struct_df = annot_df.loc[filt_structural].groupby(['contigID', 'proteinID']).size().reset_index().iloc[:, :4]
+    struct_df = struct_df.merge(annot_df, on=['contigID', 'proteinID'], how='left')
+    struct_df.to_csv(struct_table, sep='\t', index=False)
+
+    phages = annot_df['contigID'].unique()
+
+    # save structural ORFs
+    for phage in phages:
+        filt_phage = (struct_df['contigID'] == phage)
+        tmp_df = struct_df.loc[filt_phage]
+
+        outfile = Path(orfs_dir, phage + '.fasta')
+
+        # if no structural proteins in phage save almost empty file
+        if not len(tmp_df):
+            record = SeqRecord(Seq('A'), id='holder', description='')
+            SeqIO.write(record, outfile, 'fasta')
+            continue
+        else: pass
+
+        proteinIDs, statuses, seqs = tmp_df['proteinID'], tmp_df['status'], tmp_df['orf']
+        records = []
+
+        for proteinID, status, seq in zip(proteinIDs, statuses, seqs):
+            record = SeqRecord(Seq(seq), id=proteinID, description=status)
+            records.append(record)
+
+        SeqIO.write(records, outfile, 'fasta')
+
+
+    # run ANImm on structural proteins
+    proteins_dir = Path(phagedb_dir, 'split_records', 'proteins')
+    process = run_ANImm(animm_dir, proteins_dir, stGRR_dir)
+    return process
