@@ -32,6 +32,13 @@ def preprocessing(inphared_dir, prophages_dir, phrogs_annot_table, phagedb_dir):
         return None
     else: pass
 
+    backphlip = '/home/MCB/jkoszucki/backphlip/phages.fasta.bacphlip'
+    backphlip_df = pd.read_csv(backphlip, sep='\t')
+    backphlip_df.loc[backphlip_df['Temperate'] >= 0.8, 'backphlip'] = 'temperate'
+    backphlip_df['backphlip'].fillna('virulent', inplace=True)
+    backphlip_df.columns = ['phageID', 'virulent', 'temperate', 'backphlip']
+    backphlip_df = backphlip_df[['phageID', 'backphlip']]
+
     # input paths
     prophages_fasta =  Path(prophages_dir, 'prophages.fasta')
     prophages_metadata = Path(prophages_dir, 'prophages.tsv')
@@ -114,19 +121,21 @@ def preprocessing(inphared_dir, prophages_dir, phrogs_annot_table, phagedb_dir):
     metadata_df = pd.concat([prophages_df, inphared_df])
     metadata_df.drop('n', axis=1, inplace=True)
 
+    annot_input_dfs = [pd.read_csv(path, sep='\t') for path in [prophages_annot_input, inphared_annot_input]]
+    annot_input_df = pd.concat(annot_input_dfs)
+    annot_input_df.to_csv(phages_annot_input, sep='\t', index=False)
+    print('Functional annotation input tables merged and saved :)')
+
+    # add columns if phage should be flipped
+    metadata_df = flip_phage(annot_phrogs_df, annot_input_df, metadata_df)
+    metadata_df = metadata_df.merge(backphlip_df, on='phageID', how='left')
+
     # make table nice
     metadata_df.reset_index(drop=True)
     metadata_df.index = metadata_df.index + 1
     metadata_df['n'] = metadata_df.index
-    cols = ['n']+ list(metadata_df.columns[:-1])
+    cols = ['n'] + list(metadata_df.columns[:-1])
 
-    annot_input_dfs = [pd.read_csv(path, sep='\t') for path in [prophages_annot_input, inphared_annot_input]]
-    annot_input_df = pd.concat(annot_input_dfs)
-    annot_input_df.to_csv(phages_annot_input, sep='\t', index=False)
-    print('Functiona annotation input tables merged and saved :)')
-
-    # add columns if phage should be flipped
-    metadata_df = flip_phage(annot_phrogs_df, annot_input_df, metadata_df)
     metadata_df[cols].to_csv(phages_metadata, sep='\t', index=False)
     print('Metadata unified and copied successfully :) ')
 
@@ -145,18 +154,22 @@ def flip_phage(annot_phrogs_df, annot_input_df, metadata_df):
         tmp_df = annot_phrogs_df.loc[filt_phage * filt_categs].copy()
 
         if not len(tmp_df):
-            median = 10**6 # never flip phages that dont have structural genes
+            median = -1 # never flip phages that dont have structural genes
         else:
-            median = np.absolute((tmp_df['stop'] - tmp_df['start']/2)).median()
+            median = (((tmp_df['start'] - tmp_df['stop']) / 2) + (tmp_df['start'])).median()
         medians.append(median)
 
-    filp_df = pd.DataFrame({'phageID': phages, 'struct_genes_median': medians})
+    flip_df = pd.DataFrame({'phageID': phages, 'struct_genes_median': medians})
 
     annot_input_df.rename({'contigID': 'phageID'}, axis=1, inplace=True)
-    filp_df = filp_df.merge(annot_input_df, on='phageID', how='left')
+    flip_df = flip_df.merge(annot_input_df, on='phageID', how='left')
 
-    filp_df['flip_phage'] = (filp_df['contig_len [bp]'] / 2) > (filp_df['struct_genes_median'])
-    flip_df = filp_df[['phageID', 'flip_phage']]
+    flip_df['struct_median_location'] =  np.round((flip_df['struct_genes_median']) / (flip_df['contig_len [bp]']), 2)
+
+    flip_df.loc[flip_df['struct_median_location'] < 0.5, 'flip_phage'] = True
+    flip_df['flip_phage'].fillna(False, inplace=True)
+
+    flip_df = flip_df[['phageID', 'flip_phage', 'struct_median_location']]
 
     metadata_df = metadata_df.merge(flip_df, on='phageID', how='left')
     return metadata_df
@@ -189,9 +202,10 @@ def run_ANImm(animm_dir, input_dir, output_dir):
     with open(config_path, 'w+') as file:
         yaml.dump(config, file)
 
-    cmd = f'cd {animm_dir}; snakemake --use-conda --cores all --configfile sample-configs/proteins-based.yml'
+    print('Running ANImm... ', sep='')
+    cmd = f'cd {animm_dir}; rm -rf .snakemake; nohup snakemake --use-conda --cores all --configfile sample-configs/proteins-based.yml &'
     process = run(cmd, capture_output=True, shell=True)
-
+    print('Done!')
     return process
 
 
@@ -414,75 +428,93 @@ def merge_annot_table_and_phrogs_metatable(annot_table, phrogs_annot_table):
     return annot_df
 
 
-def between_phariants_easyfig(work_dir, clades, phages, phages_genbank_dir, easyfig_script, leg_name='structural', annotate_columns=['phageID', 'backphlip', 'K_locus', 'ST', 'genetic_localisation', 'ICTV_Family'], font_path='other/arial.ttf'):
+def run_easyfig(genbank_dir, fnames, fnames2reverse, metadata_df, output_file, leg_name='structural',  columns2annotate=[], script='other/Easyfig.py'):
+    """ ... """
+
+    # paths
+    easyfig_dir, fstem = Path(output_file).parent, Path(output_file).stem
+
+    raw_dir = Path(easyfig_dir, '1_raw')
+    annotated_dir = Path(easyfig_dir, '2_annotated')
+
+    svg = Path(raw_dir, fstem + '.svg')
+    jpeg_raw = Path(raw_dir, fstem + '.jpg')
+    jpeg_annot = Path(annotated_dir, fstem + '.jpg')
+
+    svg, genbank_dir = str(svg), str(genbank_dir)
+
+    # create output dirs
+    raw_dir.mkdir(exist_ok=True, parents=True)
+    annotated_dir.mkdir(exist_ok=True, parents=True)
+
+    # prepare input files paths
+    input_files = []
+    for fname in fnames:
+        if fname.upper() in fnames2reverse: path = str(Path(genbank_dir, fname.upper() + '.gb R'))
+        else: path = str(Path(genbank_dir, fname.upper() + '.gb'))
+
+        input_files.append(path)
+    input_files = ' '.join(input_files)
+
+    cmd = f'bash -c "source activate root; conda activate easyfig ; \
+            python2 {script} \
+            -svg -legend double -leg_name {leg_name} -f CDS -f1 T -i 60 -filter -aln right \
+            -o {svg} {input_files};"'
+
+    process = run(cmd, capture_output=True, shell=True)
+
+
+    # convert svg2jpeg
+    image = pyvips.Image.new_from_file(svg, dpi=100).flatten(background=255)
+    image.write_to_file(jpeg_raw)
+
+    # annotate figures
+    text_color = (0,0,0)
+    lines_to_annotate = get_text(metadata_df, fnames, columns2annotate)
+    add_annotation(jpeg_raw, jpeg_annot, text_color, lines_to_annotate)
+
+    return process
+
+
+def between_phariants_easyfig(work_dir, clades, phages, phages_genbank_dir, leg_name='structural', columns2annotate=['phageID', 'backphlip', 'K_locus', 'ST', 'genetic_localisation', 'ICTV_Family']):
     """ ... """
 
     clades_df = pd.read_csv(clades, sep='\t')
-
-    easyfig_dir = Path(work_dir, '1_cophariants_easyfig', '1_between_phariants')
-    raw_dir = Path(easyfig_dir, 'raw')
-    annotated_dir = Path(easyfig_dir, 'annotated')
-
-    font = ImageFont.truetype(str(Path(font_path).resolve()), 70)
+    easyfig_dir = Path(work_dir, '1_coGRR', '3_easyfig', '1_between_phariants')
     clusters = sorted(list(clades_df['clusterID'].unique()))
 
-    print(f"Fonth path for annotation of easyfig schemes: {str(Path(font_path).resolve())}")
-
     # checkpoint
-    if annotated_dir.exists():
+    if easyfig_dir.exists():
         print('Nothing to do :)')
-        print(f'To force rerun delete {str(annotated_dir)}')
+        print(f'To force rerun delete {str(easyfig_dir)}')
         return None, None
     else:
         print(f'Generating easyfig figures for {len(clusters)} clusters :) ', sep='')
 
-    raw_dir.mkdir(exist_ok=True, parents=True)
-    annotated_dir.mkdir(exist_ok=True, parents=True)
+    phages_df = pd.read_csv(phages, sep='\t')
+    flip_phages = phages_df.loc[phages_df['flip_phage']]['phageID'].tolist()
 
     for nclust in clusters:
         leafs = clades_df.loc[clades_df['clusterID'] == nclust]['contigID'].to_list()
         phages_df = pd.read_csv(phages, sep='\t')
         phages_df.fillna('', inplace=True)
 
-        # convert phage/leaf names to paths to genbank files
-        easyfig_input_files = [str(Path(phages_genbank_dir, leaf.upper() + '.gb')) for leaf in leafs]
-        easyfig_input_files = ' '.join(easyfig_input_files)
-
-        svg = Path(raw_dir, f'clade_{str(nclust)}.svg')
-
-        cmd = f'bash -c "source activate root; conda activate easyfig ; \
-                python2 {easyfig_script} \
-                -svg -legend double -leg_name {leg_name} -f CDS -f1 T -i 60 -filter -aln right \
-                -o {str(svg)} {easyfig_input_files};"'
-
-        complete_process = run(cmd, capture_output=True, shell=True)
-
-        # convert svg2jpeg
-        jpeg_raw = Path(raw_dir, svg.stem + '.jpg')
-        image = pyvips.Image.new_from_file(svg, dpi=100).flatten(background=255)
-        image.write_to_file(jpeg_raw)
-
-        jpeg_annot = Path(annotated_dir, svg.stem + '.jpg')
-
-        lines_to_annotate = get_text(phages_df, leafs, annotate_columns)
-        color = (0,0,0)
-        add_annotation(jpeg_raw, jpeg_annot, font, color, lines_to_annotate)
+        svg = Path(easyfig_dir, f'clade_{str(nclust)}.svg')
+        process = run_easyfig(phages_genbank_dir, leafs, flip_phages, phages_df, svg, leg_name='structural', columns2annotate=columns2annotate)
 
     print('Done! :)', sep='')
-    return annotated_dir, complete_process
+    return process
 
 
 def get_text(df, phageIDs, columns):
-    """ ... """
+    """ very nice """
 
     df = df.loc[df['phageID'].isin(phageIDs)].copy()
-
-    df['phageID_cat'] = pd.Categorical(df['phageID'], categories=phageIDs, ordered=True)
-    df.sort_values('phageID_cat', inplace=True)
-
-    lines_to_annotate = ['  '.join(line) for line in df[columns].values.tolist()]
-
-    return lines_to_annotate
+    col_phageIDs = df['phageID'].to_list()
+    lines = df.apply(lambda row: '  '.join(list(map(str, row[columns]))), axis=1).to_list()
+    lines2annotate = {phageID: annotate for phageID, annotate in zip(col_phageIDs, lines)}
+    lines2annotate = [lines2annotate[phageID] for phageID in phageIDs]
+    return lines2annotate
 
 
 def add_border(input_image, border, color):
@@ -497,8 +529,10 @@ def add_border(input_image, border, color):
     return bimg
 
 
-def add_annotation(input_image, output_image, font, color, text_lines):
+def add_annotation(input_image, output_image, color, text_lines, font='other/arial.ttf'):
     """ Color as rgb tuple."""
+
+    font = ImageFont.truetype(str(Path(font).resolve()), 70)
 
     add_pixels = 2500
     img = add_border(input_image, (0, 0, add_pixels, 0), color='white')
@@ -523,12 +557,11 @@ def stGRR(animm_dir, phagedb_dir, output_dir, structural_categories=['head and p
 
     # paths
     annot_table = Path(phagedb_dir, 'annot.tsv')
-    orfs_dir = Path(output_dir, '1_struct_orfs')
+    prots_dir = Path(output_dir, '1_struct_prots')
     stGRR_dir = Path(output_dir, '2_ANImm')
     struct_table = Path(output_dir, 'struct_annot.tsv')
 
-    Path(orfs_dir).mkdir(exist_ok=True, parents=True)
-    Path(animm_dir).mkdir(exist_ok=True, parents=True)
+    Path(prots_dir).mkdir(exist_ok=True, parents=True)
 
     # load tables
     annot_df = pd.read_csv(annot_table, sep='\t')
@@ -536,7 +569,6 @@ def stGRR(animm_dir, phagedb_dir, output_dir, structural_categories=['head and p
 
     annot_df['phrog'] = annot_df.apply(lambda row: int(row['target'].strip('phrog_')) , axis=1)
     annot_df = annot_df.merge(phrogs_df, on='phrog', how='left')
-
 
     filt_structural = annot_df['category'].isin(structural_categories)
     struct_df = annot_df.loc[filt_structural].groupby(['contigID', 'proteinID']).size().reset_index().iloc[:, :4]
@@ -550,16 +582,13 @@ def stGRR(animm_dir, phagedb_dir, output_dir, structural_categories=['head and p
         filt_phage = (struct_df['contigID'] == phage)
         tmp_df = struct_df.loc[filt_phage]
 
-        outfile = Path(orfs_dir, phage + '.fasta')
+        outfile = Path(prots_dir, phage + '.fasta')
 
         # if no structural proteins in phage save almost empty file
-        if not len(tmp_df):
-            record = SeqRecord(Seq('A'), id='holder', description='')
-            SeqIO.write(record, outfile, 'fasta')
-            continue
+        if not len(tmp_df): continue
         else: pass
 
-        proteinIDs, statuses, seqs = tmp_df['proteinID'], tmp_df['status'], tmp_df['orf']
+        proteinIDs, statuses, seqs = tmp_df['proteinID'], tmp_df['status'], tmp_df['protein']
         records = []
 
         for proteinID, status, seq in zip(proteinIDs, statuses, seqs):
@@ -567,34 +596,114 @@ def stGRR(animm_dir, phagedb_dir, output_dir, structural_categories=['head and p
             records.append(record)
 
         SeqIO.write(records, outfile, 'fasta')
-
+    print('Prepared input structural proteins :) ')
 
     # run ANImm on structural proteins
-    proteins_dir = Path(phagedb_dir, 'split_records', 'proteins')
+    proteins_dir = Path(prots_dir)
     process = run_ANImm(animm_dir, proteins_dir, stGRR_dir)
     return process
 
 
-def wgrr2network(wgrr_input, network_output):
-    """ ... """
+def merge_coGRR_and_stGRR(coGRR_table, stGRR_table, GRR_dir):
 
-    wgrr_df = pd.read_csv(wgrr_input)
-    wgrr_df['interaction'] = 'artificial'
+    Path(GRR_dir).mkdir(exist_ok=True, parents=True)
+    GRR_table = Path(GRR_dir, 'grr.csv')
 
+    coGRR_df = pd.read_csv(coGRR_table)
+    stGRR_df = pd.read_csv(stGRR_table)
+
+    GRR_df = coGRR_df.merge(stGRR_df, on=['Seq1', 'Seq2'], suffixes=('_co', '_st'))
+    GRR_df.to_csv(GRR_table, sep='\t', index=False)
+
+    return GRR_df
+
+
+def GRR(coGRR_table, stGRR_table, metadata_table, genbank_dir, GRR_dir, network_grr_tresholds = [0.9, 0.8, 0.7, 0.6, 0.5], wgrr_co=0.4, wgrr_st=0.8, force=False):
+
+    if Path(GRR_dir).exists() and not force:
+        print(f'GRR alread done! To rerun delete folder: {GRR_dir}')
+        return None
+    elif Path(GRR_dir).exists() or force:
+        print(f'Running GRR!')
+        pass
+    else: print('Error!')
+
+    print('Merging tables... ', end='')
+    GRR_df = merge_coGRR_and_stGRR(coGRR_table, stGRR_table, GRR_dir)
+    print('Done!')
+
+    print('Generating networks... ', end='')
+    for grr_type in ['st', 'co']:
+        for treshold in network_grr_tresholds:
+            network = Path(GRR_dir, f'network-{grr_type}-{treshold}.sif')
+            grr2network(GRR_df, network, grr_type, treshold)
+    print('Done!')
+
+    print('Generating correlation plot... ', end='')
+    meta_df = pd.read_csv(metadata_table, sep='\t')
+    GRR_correlation(GRR_df, meta_df, GRR_dir)
+    print('Done!')
+
+    print('Easyfig... ', end='')
+    easyfig_dir = Path(GRR_dir, 'easyfig')
+    GRR_easyfig(GRR_df, metadata_table, genbank_dir, easyfig_dir, wgrr_co=wgrr_co, wgrr_st=wgrr_st)
+    print('Done!')
+    return GRR_df
+
+
+def grr2network(GRR_df, network, structural_or_complete, grr_treshold):
+
+    filt_grr = (GRR_df[f'wgrr_{structural_or_complete}'] >= grr_treshold)
+    GRR_df = GRR_df.loc[filt_grr].copy()
+
+    GRR_df['interaction'] = 'artificial'
     cols = ['Seq1', 'interaction', 'Seq2']
-    wgrr_df = wgrr_df[cols]
-    wgrr_df.rename({'Seq1': 'phage_1', 'Seq2': 'phage_2'}, axis=1, inplace=True)
 
-    wgrr_df.to_csv(network_output)
-
-    return wgrr_df
+    GRR_df = GRR_df[cols]
+    GRR_df.rename({'Seq1': 'phage_1', 'Seq2': 'phage_2'}, axis=1, inplace=True)
+    GRR_df.to_csv(network, index=False, sep='\t')
 
 
-def network_and_histogram(wgrr):
-    """ ... """
-    network = Path(Path(wgrr).parents(), 'network.sif')
-    wgrr_df = wgrr2network(wgrr, network)
+def GRR_correlation(GRR_df, meta_df, GRR_dir, show=False):
 
-    hist = Path(Path(wgrr).parents(), 'hist.png')
-    sns.histplots(data=wgrr_df, x='wgrr', bins=40)
-    plt.savefig(hist)
+    plot = Path(GRR_dir, 'corr.png')
+
+    meta_df = meta_df[['phageID', 'backphlip']]
+    meta_df.rename({'phageID': 'Seq1', 'backphlip': 'backphlip1'}, axis=1, inplace=True)
+    GRR_df = GRR_df.merge(meta_df, on='Seq1', how='left')
+    meta_df.rename({'Seq1': 'Seq2', 'backphlip1': 'backphlip2'}, axis=1, inplace=True)
+    GRR_df = GRR_df.merge(meta_df, on='Seq2', how='left')
+
+    filt_cross = ((GRR_df['backphlip1'] == 'virulent') & (GRR_df['backphlip2'] == 'temperate')) | ((GRR_df['backphlip1'] == 'temperate') & (GRR_df['backphlip2'] == 'virulent'))
+    filt_virulent = ((GRR_df['backphlip1'] == 'virulent') & (GRR_df['backphlip2'] == 'virulent'))
+    filt_temperate = ((GRR_df['backphlip1'] == 'temperate') & (GRR_df['backphlip2'] == 'temperate'))
+
+    GRR_df.loc[filt_cross, 'phage_pair_status'] = 'cross'
+    GRR_df.loc[filt_virulent, 'phage_pair_status'] = 'virulent'
+    GRR_df.loc[filt_temperate, 'phage_pair_status'] = 'temperate'
+
+    fig, ax = plt.subplots(1,1, figsize=(40,40))
+    graph = sns.scatterplot(data=GRR_df, x='wgrr_co', y='wgrr_st', hue='phage_pair_status', size=3, ax=ax)
+    graph.axhline(1)
+    graph.axvline(1)
+
+    fig.savefig(plot)
+
+
+def GRR_easyfig(GRR_df, metadata_table, genbank_dir, output_dir, wgrr_co, wgrr_st):
+
+    filt = (GRR_df['wgrr_co'] <= wgrr_co) & (GRR_df['wgrr_st'] >= wgrr_st)
+    subset_df = GRR_df.loc[filt][['Seq1', 'Seq2']].copy()
+
+    pairs = list(zip(subset_df['Seq1'].to_list(), subset_df['Seq2'].to_list()))
+    pairs = list(itertools.chain(*pairs))
+
+    metadata_df = pd.read_csv(metadata_table, sep='\t')
+    metadata_df.fillna('', inplace=True)
+    flip_phages = metadata_df.loc[metadata_df['flip_phage']]['phageID']
+
+    pieces = len(pairs)/20
+    pairs_sliced = list(map(list, np.array_split(pairs, pieces)))
+    for i, pairs in enumerate(pairs_sliced):
+        outfile = Path(output_dir, f'{i+1}_coGRR_{wgrr_co}_stGRR_{wgrr_st}.svg')
+        run_easyfig(genbank_dir, pairs, flip_phages, metadata_df, outfile, leg_name='structural',  columns2annotate=['phageID', 'backphlip', 'K_locus', 'ST', 'genetic_localisation', 'ICTV_Family'], script='other/Easyfig.py')
