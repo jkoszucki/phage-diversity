@@ -66,7 +66,7 @@ def preprocessing(inphared_dir, prophages_dir, phrogs_annot_table, phagedb_dir):
 
     # output paths
     phages_fasta =  Path(phagedb_dir, 'phages.fasta')
-    phages_genank =  Path(phagedb_dir, 'phages.gb')
+    phages_genbank =  Path(phagedb_dir, 'phages.gb')
     phages_metadata = Path(phagedb_dir, 'phages.tsv')
     phages_annot_input = Path(phagedb_dir, 'annot_input.txt')
     phages_annot = Path(phagedb_dir, 'annot.tsv')
@@ -109,14 +109,8 @@ def preprocessing(inphared_dir, prophages_dir, phrogs_annot_table, phagedb_dir):
     annot_df.to_csv(phages_annot, sep='\t', index=False)
 
     # from annotation table to genbank files
-    annot_phrogs_df = table2genbank(phages_annot, phages_fasta, phages_genank, phrogs_annot_table, colour_type='structural')
+    annot_phrogs_df = table2genbank(phages_annot, phages_fasta, phages_genbank, phrogs_annot_table, colour_type='structural')
     annot_phrogs_df.to_csv(phages_annot_phrogs, sep='\t', index=False)
-
-    # load genbank file and save each record to seperate file for easyfig
-    records = SeqIO.parse(phages_genank, 'genbank')
-    for r in records:
-        path = Path(phages_genbank_dir, r.name + '.gb')
-        SeqIO.write(r, path, 'genbank')
 
     # combining metadata tables
     inphared_df = pd.read_csv(inphared_metadata, sep='\t')
@@ -140,6 +134,17 @@ def preprocessing(inphared_dir, prophages_dir, phrogs_annot_table, phagedb_dir):
     # add columns if phage should be flipped
     metadata_df = flip_phage(annot_phrogs_df, annot_input_df, metadata_df)
     metadata_df = metadata_df.merge(backphlip_df, on='phageID', how='left')
+    phages2flip = metadata_df.loc[metadata_df['flip_phage'], 'phageID'].to_list()
+
+    # load genbank file and save each record to seperate file for easyfig
+    records = SeqIO.parse(phages_genbank, 'genbank')
+    for r in records:
+        if r.name in phages2flip: r = flip_record(r)
+        else: pass
+
+        path = Path(phages_genbank_dir, r.name + '.gb')
+        SeqIO.write(r, path, 'genbank')
+    print('Phage flipped and saved to seperate genbank files :) ')
 
     # make table nice
     metadata_df.reset_index(drop=True)
@@ -154,36 +159,46 @@ def preprocessing(inphared_dir, prophages_dir, phrogs_annot_table, phagedb_dir):
 def flip_phage(annot_phrogs_df, annot_input_df, metadata_df):
     """ add column to metadata df if phage should be flipped or not """
 
-    # pahge flip table (based on structural proteins)
-    phages = annot_phrogs_df['contigID'].unique()
-    categs = ['head and packaging', 'connector', 'tail']
+    # phage flip table beased on overall genes directionality
+    mapper = {'+': 1, '-': -1}
+    annot_phrogs_df['tmp_strand'] = annot_phrogs_df['strand'].map(mapper)
+    directionality_df = annot_phrogs_df.groupby('contigID')['tmp_strand'].sum().reset_index()
+    directionality_df.columns = ['contigID', 'directionality']
 
-    medians = []
-    for phage in phages:
-        filt_phage = (annot_phrogs_df['contigID'] == phage)
-        filt_categs = (annot_phrogs_df['category']).isin(categs)
-        tmp_df = annot_phrogs_df.loc[filt_phage * filt_categs].copy()
+    directionality_df.loc[directionality_df['directionality'] < 0, 'flip_phage'] = True
+    directionality_df['flip_phage'].fillna(False, inplace=True)
 
-        if not len(tmp_df):
-            median = -1 # never flip phages that dont have structural genes
-        else:
-            median = (((tmp_df['start'] - tmp_df['stop']) / 2) + (tmp_df['start'])).median()
-        medians.append(median)
+    directionality_df.columns = ['phageID', 'total_strand', 'flip_phage']
 
-    flip_df = pd.DataFrame({'phageID': phages, 'struct_genes_median': medians})
-
-    annot_input_df.rename({'contigID': 'phageID'}, axis=1, inplace=True)
-    flip_df = flip_df.merge(annot_input_df, on='phageID', how='left')
-
-    flip_df['struct_median_location'] =  np.round((flip_df['struct_genes_median']) / (flip_df['contig_len [bp]']), 2)
-
-    flip_df.loc[flip_df['struct_median_location'] < 0.5, 'flip_phage'] = True
-    flip_df['flip_phage'].fillna(False, inplace=True)
-
-    flip_df = flip_df[['phageID', 'flip_phage', 'struct_median_location']]
-
-    metadata_df = metadata_df.merge(flip_df, on='phageID', how='left')
+    metadata_df = metadata_df.merge(directionality_df, on='phageID', how='left')
     return metadata_df
+
+
+def flip_record(record):
+    """ Flip record. """
+
+    length = len(record.seq)
+    features = record.features
+
+    # flip location of features
+    new_features = []
+    for f in features[::-1]:
+        if f.strand == 1: strand = -1
+        else: f.strand = strand = 1
+
+        new_start = length - int(f.location.end)
+        new_end = length - int(f.location.start)
+
+        new_location = FeatureLocation(new_start, new_end, strand)
+        f.location = new_location
+
+        new_features.append(f)
+
+    # flip sequence
+    record.seq = record.seq[::-1]
+    record.features = new_features
+
+    return record
 
 
 def coGRR(animm_dir, phagedb_dir, output_dir):
@@ -454,8 +469,8 @@ def run_easyfig(genbank_dir, fnames, fnames2reverse, metadata_df, output_file, l
     annotated_dir.mkdir(exist_ok=True, parents=True)
 
     # split lists into pieces of 50 phages
-    if len(fnames) > 50:
-        pieces = len(fnames)/ 50
+    if len(fnames) > 30:
+        pieces = len(fnames)/ 30
         fnames_pieces = list(map(list, np.array_split(fnames, pieces)))
     else:
         fnames_pieces = [fnames]
@@ -720,11 +735,12 @@ def stGRR_easyfig(genbank_dir, clusters_table, metadata_table, easyfig_dir):
     for clusterID in clusters_grouped.keys():
         clusters_grouped_mapped[clusterID] = clusters_df.loc[clusters_grouped[clusterID]]['phageID'].to_list()
 
-    fnames2reverse = metadata_df['flip_phage']
+    fnames2reverse = metadata_df.loc[metadata_df['flip_phage'], 'phageID'].to_list()
     for clusterID in clusters_grouped_mapped.keys():
         outfile = Path(easyfig_dir, f'cluster_{clusterID}.svg')
         fnames = clusters_grouped_mapped[clusterID]
-        run_easyfig(genbank_dir, fnames, fnames2reverse, metadata_df, outfile)
+        if len(fnames) > 2:
+            run_easyfig(genbank_dir, fnames, fnames2reverse, metadata_df, outfile)
 
 
 def GRR(coGRR_table, stGRR_table, metadata_table, genbank_dir, GRR_dir, network_grr_tresholds = [0.9, 0.8, 0.7, 0.6, 0.5], wgrr_co=0.4, wgrr_st=0.8, easyfig=False, show=False, force=False):
