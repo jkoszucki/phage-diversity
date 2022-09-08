@@ -1,6 +1,7 @@
 # import modules
 import warnings
 import sys
+import ast
 import shutil
 import pandas as pd
 import seaborn as sns
@@ -32,7 +33,8 @@ def preprocessing(inphared_dir, prophages_dir, phrogs_annot_table, phagedb_dir):
         return None
     else: pass
 
-    backphlip = '/home/MCB/jkoszucki/backphlip/phages.fasta.bacphlip'
+    rbps_table = '/home/MCB/jkoszucki/phagedb/byhand/domains_detections.csv'
+    backphlip = '/home/MCB/jkoszucki/phagedb/byhand/backphlip/phages.fasta.bacphlip'
     backphlip_df = pd.read_csv(backphlip, sep='\t')
 
     print(f'Loading backphlip from {backphlip}... ', end='')
@@ -87,12 +89,8 @@ def preprocessing(inphared_dir, prophages_dir, phrogs_annot_table, phagedb_dir):
     records = list(itertools.chain(*records))
     n = SeqIO.write(records, phages_fasta, 'fasta')
 
-    for r in records:
-        path = Path(phages_fasta_dir, r.name + '.fasta')
-        SeqIO.write(r, path, 'fasta')
-
-    if n == len(records): print('Records saved successfully :) ')
-    else: print('Some records are missing.')
+    # if n == len(records): print('Records saved successfully :) ')
+    # else: print('Some records are missing.')
 
     # copy orf files
     proteins_files = [list(dir.glob('*fasta')) for dir in [prophages_proteins_dir, inphared_proteins_dir]]
@@ -109,7 +107,7 @@ def preprocessing(inphared_dir, prophages_dir, phrogs_annot_table, phagedb_dir):
     annot_df.to_csv(phages_annot, sep='\t', index=False)
 
     # from annotation table to genbank files
-    annot_phrogs_df = table2genbank(phages_annot, phages_fasta, phages_genbank, phrogs_annot_table, colour_type='structural')
+    annot_phrogs_df = table2genbank(phages_annot, phages_fasta, phages_genbank, phrogs_annot_table, rbps_table, colour_type='structural')
     annot_phrogs_df.to_csv(phages_annot_phrogs, sep='\t', index=False)
 
     # combining metadata tables
@@ -142,9 +140,15 @@ def preprocessing(inphared_dir, prophages_dir, phrogs_annot_table, phagedb_dir):
         if r.name in phages2flip: r = flip_record(r)
         else: pass
 
+        # save genbank
         path = Path(phages_genbank_dir, r.name + '.gb')
         SeqIO.write(r, path, 'genbank')
-    print('Phage flipped and saved to seperate genbank files :) ')
+
+        # save fasta
+        path = Path(phages_fasta_dir, r.name + '.fasta')
+        SeqIO.write(r, path, 'fasta')
+
+    print('Phage flipped and saved to seperate genbank & fasta files :) ')
 
     # make table nice
     metadata_df.reset_index(drop=True)
@@ -195,10 +199,31 @@ def flip_record(record):
         new_features.append(f)
 
     # flip sequence
-    record.seq = record.seq[::-1]
+    record.seq = record.seq.reverse_complement()
     record.features = new_features
 
     return record
+
+
+def addRBPs(rbps_table, annot_df, rgb_color='209 29 83', html_color='#d11d53'):
+    """ add the rbps to annot table """
+
+    rbps_df = pd.read_csv(rbps_table)
+
+    rbps_df['domains'] = rbps_df.apply(lambda row: ' '.join(ast.literal_eval(row['N_blocks']) + ast.literal_eval(row['C_blocks'])), axis=1)
+    rbps_df = rbps_df[['identifier', 'domains']]
+    rbps_df.columns = ['proteinID', 'domains']
+
+    filt_rbps = annot_df['proteinID'].isin(rbps_df['proteinID'])
+    annot_df.loc[filt_rbps, 'color'] = html_color
+    annot_df.loc[filt_rbps, 'structural'] = 'RBP'
+    annot_df.loc[filt_rbps, 'rgb_color_structural'] = rgb_color
+    annot_df.loc[filt_rbps, 'RBP'] = True
+
+    annot_df['RBP'].fillna(False, inplace=True)
+    annot_df.loc[annot_df['RBP'], 'domains'] = rbps_df['domains'].to_list()
+    annot_df['domains'].fillna('', inplace=True)
+    return annot_df
 
 
 def coGRR(animm_dir, phagedb_dir, output_dir):
@@ -261,15 +286,34 @@ def run_mashtree(phagedb_dir, output_dir):
 
     Path(output_dir).mkdir(exist_ok=True, parents=True)
 
-    cmd = f'source ~/.bashrc; conda activate mashtree; mashtree.pl {fasta_dir}/* >> {output_file}; conda activate mybase;'
+    cmd = f'bash -c "conda activate mashtree; mashtree.pl {fasta_dir}/* >> {output_file};"'
 
     print('Just run the command in bash. Problem with conda env AGAIN : / \n')
     print(cmd)
 
-    # process = run(cmd, capture_output=True, shell=True)
-    # if not str(process.stderr): print('Mashtree done! :)')
+    process = run(cmd, capture_output=True, shell=True)
 
     return cmd
+
+
+def better_mashtree(fasta_dir, tree, fnames=[]):
+    """ generate newick mashtree and get leafs sorted by mashtree """
+
+    Path(tree).parent.mkdir(exist_ok=True, parents=True)
+
+    # preapre input files
+    if fnames: files = [str(Path(fasta_dir, fname + '.fasta')) for fname in fnames]
+    else: files = [str(path) for path in list(Path(fasta_dir).glob('*.fasta'))]
+
+    input_files, tree = ' '.join(files), str(tree)
+
+    cmd = f'bash -c "source activate root; conda activate mashtree; mashtree.pl {input_files} >> {tree};"'
+    process = run(cmd, capture_output=True, shell=True)
+
+    tree = list(Phylo.parse(tree, "newick"))[0]
+    leafs = [leaf.name.upper() for leaf in tree.get_terminals()]
+
+    return leafs
 
 
 def tree2clades(mash_tree_path, phariants_table, clades, n_clusters=1, kmeans_show=True):
@@ -310,7 +354,7 @@ def tree2clades(mash_tree_path, phariants_table, clades, n_clusters=1, kmeans_sh
     return phage_clusters_df
 
 
-def table2genbank(annot_table, phages_fasta, genbank, phrogs_annot_table, colour_type='structural'):
+def table2genbank(annot_table, phages_fasta, genbank, phrogs_annot_table, rbps_table, colour_type='structural'):
     """ Converts output table (nr 5) from functional annotation to gebank file.
     phages_fasta is a path to file with all phage sequences.
     Decide which colour to put in genbank: 'structural' or 'phrogs'."""
@@ -321,6 +365,9 @@ def table2genbank(annot_table, phages_fasta, genbank, phrogs_annot_table, colour
     else: pass
 
     annot_df = merge_annot_table_and_phrogs_metatable(annot_table, phrogs_annot_table)
+    annot_df = addRBPs(rbps_table, annot_df)
+    print('Added RBPs predicted via domains to table :)')
+
     phages_records_fasta = list(SeqIO.parse(phages_fasta, 'fasta'))
 
     contigIDs = annot_df['contigID'].unique()
@@ -454,7 +501,7 @@ def merge_annot_table_and_phrogs_metatable(annot_table, phrogs_annot_table):
     return annot_df
 
 
-def run_easyfig(genbank_dir, fnames, fnames2reverse, metadata_df, output_file, leg_name='structural',  columns2annotate=['phageID', 'backphlip', 'backphlip_conf', 'K_locus', 'ST', 'genetic_localisation', 'ICTV_Family'], script='other/Easyfig.py'):
+def run_easyfig(genbank_dir, fnames, metadata_df, output_file, leg_name='structural',  columns2annotate=['phageID', 'backphlip', 'backphlip_conf', 'K_locus', 'ST', 'genetic_localisation', 'ICTV_Family'], script='other/Easyfig.py'):
     """ ... """
 
     # paths
@@ -485,9 +532,7 @@ def run_easyfig(genbank_dir, fnames, fnames2reverse, metadata_df, output_file, l
         # prepare input files paths
         input_files = []
         for fname in fnames:
-            if fname.upper() in fnames2reverse: path = str(Path(genbank_dir, fname.upper() + '.gb R'))
-            else: path = str(Path(genbank_dir, fname.upper() + '.gb'))
-
+            path = str(Path(genbank_dir, fname.upper() + '.gb'))
             input_files.append(path)
         input_files = ' '.join(input_files)
 
@@ -533,7 +578,7 @@ def between_phariants_easyfig(work_dir, clades, phages, phages_genbank_dir, leg_
         phages_df.fillna('', inplace=True)
 
         svg = Path(easyfig_dir, f'clade_{str(nclust)}.svg')
-        process = run_easyfig(phages_genbank_dir, leafs, flip_phages, phages_df, svg, leg_name='structural', columns2annotate=columns2annotate)
+        process = run_easyfig(phages_genbank_dir, leafs, phages_df, svg, leg_name='structural', columns2annotate=columns2annotate)
 
     print('Done! :)', sep='')
     return process
@@ -593,6 +638,7 @@ def stGRR(animm_dir, phagedb_dir, output_dir, structural_categories=['head and p
     annot_table = Path(phagedb_dir, 'annot.tsv')
     metadata_table = Path(phagedb_dir, 'phages.tsv')
     genbank_dir = Path(phagedb_dir, 'split_records/genbank')
+    fasta_dir = Path(phagedb_dir, 'split_records/fasta')
 
     prots_dir = Path(output_dir, '1_struct_prots')
     stGRR_dir = Path(output_dir, '2_ANImm')
@@ -648,7 +694,7 @@ def stGRR(animm_dir, phagedb_dir, output_dir, structural_categories=['head and p
         process = run_ANImm(animm_dir, proteins_dir, stGRR_dir)
 
 
-    wgrr_thresholds = [0.9, 0.8]
+    wgrr_thresholds = [0.9]
     print_tresholds = ', '.join(list(map(str, wgrr_thresholds)))
     print(f'Clustering by stGRR... (tresholds: {print_tresholds}) ', end='')
     stGRR_clusters(stGRR_dir, metadata_table, clusters_dir, wgrr_thresholds=wgrr_thresholds)
@@ -659,7 +705,7 @@ def stGRR(animm_dir, phagedb_dir, output_dir, structural_categories=['head and p
         easyfig_dir = Path(output_dir, '3_clusters', 'easyfig', f'wgrr-{threshold}')
         easyfig_dir.mkdir(exist_ok=True, parents=True)
         clusters_table = Path(clusters_dir, f'clusters-{threshold}.tsv')
-        stGRR_easyfig(genbank_dir, clusters_table, metadata_table, easyfig_dir)
+        stGRR_easyfig(genbank_dir, fasta_dir, clusters_table, metadata_table, easyfig_dir)
     print('Done!')
 
 
@@ -724,10 +770,13 @@ def stGRR_clusters(stGRR_dir, metadata_table, clusters_dir, wgrr_thresholds):
     return output_paths
 
 
-def stGRR_easyfig(genbank_dir, clusters_table, metadata_table, easyfig_dir):
+def stGRR_easyfig(genbank_dir, fasta_dir, clusters_table, metadata_table, easyfig_dir):
 
     clusters_df = pd.read_csv(clusters_table, sep='\t')
     metadata_df = pd.read_csv(metadata_table, sep='\t')
+
+    trees_dir = Path(easyfig_dir, 'trees')
+    trees_dir.mkdir(exist_ok=True, parents=True)
 
     clusters_grouped = clusters_df.groupby('clusterID').groups
 
@@ -735,12 +784,14 @@ def stGRR_easyfig(genbank_dir, clusters_table, metadata_table, easyfig_dir):
     for clusterID in clusters_grouped.keys():
         clusters_grouped_mapped[clusterID] = clusters_df.loc[clusters_grouped[clusterID]]['phageID'].to_list()
 
-    fnames2reverse = metadata_df.loc[metadata_df['flip_phage'], 'phageID'].to_list()
     for clusterID in clusters_grouped_mapped.keys():
         outfile = Path(easyfig_dir, f'cluster_{clusterID}.svg')
         fnames = clusters_grouped_mapped[clusterID]
+
         if len(fnames) > 2:
-            run_easyfig(genbank_dir, fnames, fnames2reverse, metadata_df, outfile)
+            tree = Path(trees_dir, f'cluster_{clusterID}.newick')
+            fnames = better_mashtree(fasta_dir, tree, fnames=fnames)
+            run_easyfig(genbank_dir, fnames, metadata_df, outfile)
 
 
 def GRR(coGRR_table, stGRR_table, metadata_table, genbank_dir, GRR_dir, network_grr_tresholds = [0.9, 0.8, 0.7, 0.6, 0.5], wgrr_co=0.4, wgrr_st=0.8, easyfig=False, show=False, force=False):
@@ -864,4 +915,4 @@ def GRR_easyfig(GRR_df, metadata_table, genbank_dir, output_dir, wgrr_co, wgrr_s
     pairs_sliced = list(map(list, np.array_split(pairs, pieces)))
     for i, pairs in enumerate(pairs_sliced):
         outfile = Path(output_dir, f'{i+1}_coGRR_{wgrr_co}_stGRR_{wgrr_st}.svg')
-        run_easyfig(genbank_dir, pairs, flip_phages, metadata_df, outfile, leg_name='structural',  columns2annotate=['phageID', 'backphlip', 'backphlip_conf', 'K_locus', 'ST', 'genetic_localisation', 'ICTV_Family'], script='other/Easyfig.py')
+        run_easyfig(genbank_dir, pairs, metadata_df, outfile, leg_name='structural',  columns2annotate=['phageID', 'backphlip', 'backphlip_conf', 'K_locus', 'ST', 'genetic_localisation', 'ICTV_Family'], script='other/Easyfig.py')
